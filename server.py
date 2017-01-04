@@ -37,13 +37,12 @@ def filterSlab(slab):
 def calculateActivity(slab, wpipe):
     nchan = slab.shape[0]
     slab = (np.array(slab, dtype='float')-2**15)*MICROVOLTS_PER_COUNT
-    filteredSlice = filterSlab(slab)
-    threshold = (-4.5*np.median(np.abs(filteredSlice), axis=1)/0.6745) # from J.P. Kinney
-    activitySlice = np.zeros(nchan)
-    #TODO: consider vectorizing
+    filteredSlab = filterSlab(slab)
+    threshold = (-4.5*np.median(np.abs(filteredSlab), axis=1)/0.6745) # from J.P. Kinney
+    activity = np.zeros(nchan)
     for i in range(nchan):
-        activitySlice[i] = np.sum((filteredSlice[i,:] < threshold[i]))
-    wpipe.send(activitySlice)
+        activity[i] = np.sum((filteredSlab[i,:] < threshold[i]))
+    wpipe.send(activity)
 
 class PipedProcess(mp.Process):
     def __init__(self, rpipe, **kwargs):
