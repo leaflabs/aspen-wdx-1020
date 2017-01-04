@@ -10,12 +10,14 @@ else:
 from PyQt4 import QtCore, QtGui
 
 import numpy as np
-
+from copy import deepcopy as copy
 import socket, Queue, threading
 
 from ViewPort import ViewPort
 from ProbeMap import ProbeMap
 from TimeScrubber import TimeScrubber
+
+####
 
 def socket_recv(socket, num_bytes):
     buf = bytearray(num_bytes)
@@ -28,47 +30,56 @@ def socket_recv(socket, num_bytes):
 
 ####
 
-class DataRequest():
+class IOThread(QtCore.QThread):
+
+    dataReceived = QtCore.pyqtSignal(object)
+
+    def __init__(self):
+        QtCore.QThread.__init__(self)
+        self.mtx = QtCore.QMutex()
+        self.cv = QtCore.QWaitCondition()
+        with QtCore.QMutexLocker(self.mtx):
+            self.reqStack = None       # stack of max length 1
+        self.alive = threading.Event()
+        self.alive.set()
+
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.settimeout(10)
+        self.connect()
+
+    def connect(self):
+        self.socket.connect((SERVER_ADDR, SERVER_PORT))
+
+    def disconnect(self):
+        self.socket.close()
+
+    def run(self):
+        while True:
+            self.mtx.lock()
+            while not self.reqStack:
+                self.cv.wait(self.mtx)
+            req = copy(self.reqStack) # this could be replaced by a proper stack structure
+            self.reqStack = None
+            self.mtx.unlock()
+            self._handleRequest(req)
+
+    def postRequest(self, req):
+        with QtCore.QMutexLocker(self.mtx):
+            self.reqStack = req
+        self.cv.wakeAll()
+
+    def _handleRequest(self, req):
+        pass
+
+
+class DataSlabRequest():
 
     def __init__(self, chan, time, filt):
         self.chan = chan
         self.time = time
         self.filt = filt
 
-class DataThread(QtCore.QThread):
-
-    dataReceived = QtCore.pyqtSignal(object)
-
-    def __init__(self):
-        QtCore.QThread.__init__(self)
-        self.q = Queue.Queue()
-        self.alive = threading.Event()
-        self.alive.set()
-
-        self.connect()
-
-    def run(self):
-        while self.alive.isSet():
-            try:
-                # Queue.get with timeout to allow checking self.alive
-                req = self.q.get(True, 0.1)
-                self._handleRequest(req)
-            except Queue.Empty as e:
-                continue
-
-    def connect(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.settimeout(2)
-        self.socket.connect((SERVER_ADDR, SERVER_PORT))
-
-    def closeConnection(self):
-        self.socket.close()
-
-    def postRequest(self, chan, time, filt):
-        req = DataRequest(chan, time, filt)
-        self.q.put(req)
-        print '\nrequest posted: ', req
-        print 'queue length is: ', self.q.qsize()
+class DataSlabThread(IOThread):
 
     def _handleRequest(self, req):
         chan, time, filt = req.chan, req.time, req.filt
@@ -77,14 +88,30 @@ class DataThread(QtCore.QThread):
         try:
             chans = np.fromstring(socket_recv(self.socket, 12*2), dtype=np.uint16) # TODO: really need this?
             dataSlab = np.fromstring(socket_recv(self.socket, 12*60000*2), dtype=np.float16).reshape((12,60000))
-            print '\nReceived:', dataSlab.shape, dataSlab.dtype, dataSlab[0,:10], '\n'
             colors = 255*np.ones((12,4), dtype=np.uint8) # white for now
             self.dataReceived.emit((dataSlab, chans, time, colors))
-            print 'request handled: ', req
-            print 'queue length is: %d\n' % self.q.qsize()
         except socket.timeout:
-            print 'timeout!'
+            print 'dataSlab request timed out!'
 
+
+class ActivityRequest():
+
+    def __init__(self, time):
+        self.time = time
+
+class ActivityThread(IOThread):
+
+    def _handleRequest(self, req):
+        time = req.time
+        payload = 'activity,%d' % time
+        self.socket.send(payload)
+        try:
+            activity = np.fromstring(socket_recv(self.socket, 1020*2), dtype=np.float16)
+            self.dataReceived.emit(activity)
+        except socket.timeout:
+            print 'activity request timed out!'
+
+####
 
 class MainWindow(QtGui.QWidget):
 
@@ -94,9 +121,11 @@ class MainWindow(QtGui.QWidget):
 
         self.event_time = clock()
 
-        # IO structure
-        self.dataThread = DataThread()
-        self.dataThread.start()
+        # IO threads
+        self.dataSlabThread = DataSlabThread()
+        self.dataSlabThread.start()
+        self.activityThread = ActivityThread()
+        self.activityThread.start()
 
         # GUI
         self.setStyleSheet("background-color: #0F0F0F")
@@ -129,33 +158,41 @@ class MainWindow(QtGui.QWidget):
         layout.setContentsMargins(0,0,0,0)
         self.setContentsMargins(0,0,0,0)
         self.setWindowTitle('Aspen WDX (1020 Chan)')
-        #self.setWindowIcon(QtGui.QIcon('aspen_logo_400x400.jpeg'))
-        #self.setWindowIcon(QtGui.QIcon('shanks.jpg'))
+        self.setWindowIcon(QtGui.QIcon('aspen_leaf.svg'))
         self.resize(1400,800)
 
         # signals/slots
-        self.dataThread.dataReceived.connect(self.viewPort.updateSlab)
+        self.dataSlabThread.dataReceived.connect(self.viewPort.updateSlab)
+        self.activityThread.dataReceived.connect(self.probeMap.set_intensities)
 
         # initialization
         self.slab_sample_index = 0
         self.slab_channel_index = 0
         self.filtered = True
-        self.dataThread.connect()
+        self.dataSlabThread.connect()
+        self.activityThread.connect()
 
     def handleChannelSelection(self, probeCoords):
         shank, row, col = probeCoords
         self.slab_channel_index = 204 * shank + row * 2
-        self.dataThread.postRequest(self.slab_channel_index, self.slab_sample_index, self.filtered)
+        self.postRequests(activity=False)
     
     def handleTimeSelection(self, time):
         self.slab_sample_index = int(time)
-        self.dataThread.postRequest(self.slab_channel_index, self.slab_sample_index, self.filtered)
+        self.postRequests(activity=True)
+
+    def postRequests(self, activity=False):
+        slabReq = DataSlabRequest(self.slab_channel_index, self.slab_sample_index, self.filtered)
+        self.dataSlabThread.postRequest(slabReq)
+        if activity:
+            actReq = ActivityRequest(self.slab_sample_index)
+            self.activityThread.postRequest(actReq)
         
     def keyPressEvent(self, event):
         if clock() - self.event_time > 0.33:
             if event.key() == QtCore.Qt.Key_F:
                 self.filtered = not self.filtered
-                self.dataThread.postRequest(self.slab_channel_index, self.slab_sample_index, self.filtered)
+                self.postRequests(activity=True)
                 for item in self.viewPort.plotItems:
                     item.autoRange()
 
@@ -172,7 +209,8 @@ class MainWindow(QtGui.QWidget):
                 self.probeMap.increment_channel()
 
             elif event.key() == QtCore.Qt.Key_Escape:
-                self.dataThread.quit()
+                self.dataSlabThread.quit()
+                self.activityThread.quit()
                 self.close()
 
             elif event.key() == QtCore.Qt.Key_Home:

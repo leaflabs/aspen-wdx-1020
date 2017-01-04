@@ -7,6 +7,11 @@ import numpy as np
 
 from CursorRect import CursorRect
 
+from viridis import viridis as cmap
+
+ACT_MAX = 300.
+ACT_MIN = 0.
+
 class ProbeMap(QtGui.QLabel):
     
     chanSelected = QtCore.pyqtSignal(tuple)
@@ -83,8 +88,10 @@ class ProbeMap(QtGui.QLabel):
                                         1))
         self.intensities = np.array(self.intensities)        
 
-    def set_intensities(self, intensities):
-        self.intensities = intensities.reshape((5, 204, 4))
+    def set_intensities(self, activity):
+        activity_scaled = (activity - ACT_MIN) / (ACT_MAX - ACT_MIN)
+        intensities = np.array(map(cmap, activity_scaled), dtype=np.uint8).flatten()
+        self.intensities = intensities.reshape((5, 204, 3))
         self.repaint()
 
     def increment_channel(self):
