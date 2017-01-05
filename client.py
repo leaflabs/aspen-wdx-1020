@@ -150,6 +150,8 @@ class MainWindow(QtGui.QWidget):
         self.timeScrubber.timeSelected.connect(self.handleTimeSelection)
         self.viewPort = ViewPort(np.zeros((12, 60000)), 6, 2)
 
+        self.helpWindow = HelpWindow()
+
         ## layout
         top_layout = QtGui.QHBoxLayout()
         top_layout.addWidget(self.probeMap)
@@ -225,8 +227,39 @@ class MainWindow(QtGui.QWidget):
                     self.showNormal()
                 else:
                     self.showFullScreen()
+            elif event.key() == QtCore.Qt.Key_F1:
+                self.helpWindow.show()
 
             self.event_time = clock()
+
+
+class HelpWindow(QtGui.QWidget):
+
+    def __init__(self):
+        QtGui.QWidget.__init__(self)
+
+        usageText = ("<center><b>Usage:</b></center>"
+                    "<ul>"
+                    "<li>Mousewheel zooms horizontally</li>"
+                    "<li>Ctrl-Shift-Mousewheel zooms vertically</li>"
+                    "<li>Home returns to default plot range</li>"
+                    "<li>Channel numbers are 0-indexed, and in reference to the 1024-channel Willow dataspace</li>"
+                    "<li>y-axes have units of microVolts, x-axes have units of seconds</li>"
+                    "<li>Right/Left arrows step forward/backward in time</li>"
+                    "<li>Up/Down arrows step up/down along a shank</li>"
+                    "<li>f toggles filtering</li>"
+                    "<li>F11 toggles fullscreen</li>"
+                    "<li>Escape to close the GUI</li>"
+                    "</ul>")
+        self.usageLabel = QtGui.QLabel(usageText)
+        self.usageLabel.setWordWrap(True)
+
+        layout = QtGui.QVBoxLayout()
+        layout.addWidget(self.usageLabel)
+        self.setLayout(layout)
+
+        self.setWindowTitle('Help - Aspen WDX')
+        self.setWindowIcon(QtGui.QIcon('aspen_leaf.svg'))
 
 
 if __name__=='__main__':
