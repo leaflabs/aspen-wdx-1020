@@ -74,15 +74,20 @@ class IOThread(QtCore.QThread):
 
 class DataSlabRequest():
 
-    def __init__(self, chan, time, filt):
+    def __init__(self, chan, time, filt, activity):
         self.chan = chan
         self.time = time
         self.filt = filt
+        self.activity = activity
 
 class DataSlabThread(IOThread):
 
+    def __init__(self, activityThread):
+        IOThread.__init__(self)
+        self.activityThread = activityThread
+
     def _handleRequest(self, req):
-        chan, time, filt = req.chan, req.time, req.filt
+        chan, time, filt, activity = req.chan, req.time, req.filt, req.activity
         payload = 'dataSlab,%d,%d,%r' % (chan, time, filt)
         self.socket.send(payload)
         try:
@@ -90,6 +95,7 @@ class DataSlabThread(IOThread):
             dataSlab = np.fromstring(socket_recv(self.socket, 12*60000*2), dtype=np.float16).reshape((12,60000))
             colors = 255*np.ones((12,4), dtype=np.uint8) # white for now
             self.dataReceived.emit((dataSlab, chans, time, colors))
+            if activity: self.activityThread.postRequest(ActivityRequest(time))
         except socket.timeout:
             print 'dataSlab request timed out!'
 
@@ -122,10 +128,10 @@ class MainWindow(QtGui.QWidget):
         self.event_time = clock()
 
         # IO threads
-        self.dataSlabThread = DataSlabThread()
-        self.dataSlabThread.start()
         self.activityThread = ActivityThread()
         self.activityThread.start()
+        self.dataSlabThread = DataSlabThread(self.activityThread)
+        self.dataSlabThread.start()
 
         # GUI
         self.setStyleSheet("background-color: #0F0F0F")
@@ -175,24 +181,22 @@ class MainWindow(QtGui.QWidget):
     def handleChannelSelection(self, probeCoords):
         shank, row, col = probeCoords
         self.slab_channel_index = 204 * shank + row * 2
-        self.postRequests(activity=False)
+        self.postRequest(activity=False)
     
     def handleTimeSelection(self, time):
         self.slab_sample_index = int(time)
-        self.postRequests(activity=True)
+        self.postRequest(activity=True)
 
-    def postRequests(self, activity=False):
-        slabReq = DataSlabRequest(self.slab_channel_index, self.slab_sample_index, self.filtered)
+    def postRequest(self, activity=False):
+        slabReq = DataSlabRequest(self.slab_channel_index, self.slab_sample_index,
+                                    self.filtered, activity)
         self.dataSlabThread.postRequest(slabReq)
-        if activity:
-            actReq = ActivityRequest(self.slab_sample_index)
-            self.activityThread.postRequest(actReq)
         
     def keyPressEvent(self, event):
         if clock() - self.event_time > 0.33:
             if event.key() == QtCore.Qt.Key_F:
                 self.filtered = not self.filtered
-                self.postRequests(activity=True)
+                self.postRequest(activity=False)
                 for item in self.viewPort.plotItems:
                     item.autoRange()
 
