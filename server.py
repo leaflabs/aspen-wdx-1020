@@ -7,7 +7,7 @@ import cPickle
 from scipy import signal as dsp
 import multiprocessing as mp
 
-from time import time as wallclock
+from time import time as WALLCLOCK
 
 import signal
 
@@ -17,8 +17,6 @@ import twisted.internet.reactor as tir
 #### globals
 
 MICROVOLTS_PER_COUNT = np.float16(0.195)
-NCPU = mp.cpu_count()
-print 'NCPU = ', NCPU
 
 lowcut = 300.
 highcut = 9500.
@@ -67,6 +65,9 @@ def MPGenerator(dataSlab, nproc):
 
 #### main twisted code
 
+CACHE_RAW = None
+CACHE_TIME = None
+
 class AspenProtocol(tip.Protocol):
 
     def __init__(self):
@@ -87,13 +88,16 @@ class AspenProtocol(tip.Protocol):
         elif msg[0] == 'dataSlab':
             dataCoords = msg[1:]
             tir.callInThread(self.handleDataRequest, dataCoords)
+            #self.handleDataRequest(dataCoords)
         elif msg[0] == 'activity':
             time = int(msg[1])
             tir.callInThread(self.handleActivityRequest, time)
+            #self.handleActivityRequest(time)
         else:
             print 'unexpected keyword:', msg[0]
 
     def handleDataRequest(self, dataCoords):
+        global CACHE_RAW, CACHE_TIME
         # send channel list
         chan = int(dataCoords[0])
         time = int(dataCoords[1])
@@ -103,23 +107,40 @@ class AspenProtocol(tip.Protocol):
                                 dtype=np.uint16)
         self.transport.write(channels_willow.tostring())
 
-        # IO, filt, send dataslab
-        data = np.array(FILE['channel_data'][(1024 * time):(1024 * (time + 60000))],
-                        dtype=np.uint16).reshape((-1, 1024)).transpose()
+        # IO (first, attempt to retrieve raw data from cache)
+        if time == CACHE_TIME:
+            print 'cache hit!'
+            data = CACHE_RAW
+        else:
+            print 'cache miss! ', time, CACHE_TIME
+            data = np.array(FILE['channel_data'][(1024 * time):(1024 * (time + 60000))],
+                            dtype=np.uint16).reshape((-1, 1024)).transpose()
+
+        # slab selection and conversion
         dataSlab = (np.array(data[channels_willow,:], dtype=np.float16)-np.float16(2**15))*MICROVOLTS_PER_COUNT
+
+        # filtering
         if filt:
             dataSlab = np.array(filterSlab(dataSlab), dtype=np.float16)
         self.transport.write(dataSlab.tostring())
-        self.dataSlab = dataSlab
+
+        # save to cache
+        CACHE_RAW = data
+        CACHE_TIME = time
 
     def handleActivityRequest(self, time):
-        # this IO is redundant after a data request. better idea: caching
-        data = np.array(FILE['channel_data'][(1024 * time):(1024 * (time + 60000))],
-                        dtype=np.uint16).reshape((-1, 1024)).transpose()
-        dataSlab = (np.array(data[self.chans1020_willow,:], dtype=np.float16)-np.float16(2**15))*MICROVOLTS_PER_COUNT
+        # IO (first, attempt to retrieve raw data from cache)
+        if time == CACHE_TIME:
+            print 'cache hit!'
+            data = CACHE_RAW
+        else:
+            print 'cache miss! ', time, CACHE_TIME
+            data = np.array(FILE['channel_data'][(1024 * time):(1024 * (time + 60000))],
+                            dtype=np.uint16).reshape((-1, 1024)).transpose()
+
+        dataSlab = data[self.chans1020_willow,:] # re-ordering
 
         # (multi) processing
-        t1 = wallclock()
         procs = []
         for subSlab in MPGenerator(dataSlab, NCPU):
             rpipe, wpipe = mp.Pipe()
@@ -133,7 +154,6 @@ class AspenProtocol(tip.Protocol):
             nchan_slice = activitySlice.shape[0]
             self.activity[cursor:(cursor+nchan_slice)] = activitySlice
             cursor += nchan_slice
-        print 'filtering took: ', wallclock() - t1
         self.transport.write(self.activity.tostring())
 
 class AspenFactory(tip.ServerFactory):
@@ -150,6 +170,9 @@ if __name__ == '__main__':
         print 'Usage: ./server.py <path/to/datafile.h5>'
         sys.exit(1)
     probeMap_dict = cPickle.load(open('probeMap_1020_level2_20160402.p', 'rb'))
-    port = 8000
-    tir.listenTCP(port, AspenFactory())
+    NCPU = mp.cpu_count()
+    PORT = 8000
+    print '\nNCPU = %d' % NCPU
+    print 'Serving on Port %d\n' % PORT
+    tir.listenTCP(PORT, AspenFactory())
     tir.run()
