@@ -11,7 +11,7 @@ from PyQt4 import QtCore, QtGui
 
 import numpy as np
 from copy import deepcopy as copy
-import socket, Queue, threading
+import socket, threading
 
 from ViewPort import ViewPort
 from ProbeMap import ProbeMap
