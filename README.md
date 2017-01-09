@@ -9,7 +9,7 @@ www.leaflabs.com/aspen
 
 ## Overview
 
-Aspen is an effort to integrate scalable solutions for the Analysis, Storage, and Processing of
+Aspen is an effort to integrate scalable solutions for the Acquisition, Storage, and Processing of
 large scientific datasets. Among other things, this enables researchers to explore their data
 remotely using a thin client interface to a large database with compute-on-storage capabilities.
 
